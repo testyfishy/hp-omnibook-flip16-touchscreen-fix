@@ -1,0 +1,74 @@
+--- ../i2c-hid-acpi.c.orig	2026-09-18 00:36:45.143185102 -0600
++++ i2c-hid-acpi.c	2026-09-18 00:36:45.180432138 -0600
+@@ -21,6 +21,7 @@
+ 
+ #include <linux/acpi.h>
+ #include <linux/device.h>
++#include <linux/dmi.h>
+ #include <linux/i2c.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+@@ -76,6 +77,55 @@
+ 	return hid_descriptor_address;
+ }
+ 
++/*
++ * HP OmniBook X Flip 16 (boards 8DA0/8DA1, Lunar Lake, ELAN2514 touchscreen):
++ * the touch panel's ACPI power resource _ON (PTPL) evaluates
++ * \_SB.SGRA(TPI2, TPIP) with TPIP = 0, which clears PADCFG0 bit 20
++ * (GPIROUTIOXAPIC) of the INT pad GPP_E_18.  Linux evaluates _ON at boot
++ * and on every D3->D0 transition, so the IO-APIC input floats asserted:
++ * a ~42k IRQ/s storm and touch never reaches the CPU.  Re-set the bit with
++ * the firmware's own helper before the core talks to the device.
++ */
++static const struct dmi_system_id i2c_hid_acpi_hp_elan_irq_route[] = {
++	{ .matches = { DMI_MATCH(DMI_SYS_VENDOR, "HP"), DMI_MATCH(DMI_BOARD_NAME, "8DA1") } },
++	{ .matches = { DMI_MATCH(DMI_SYS_VENDOR, "HP"), DMI_MATCH(DMI_BOARD_NAME, "8DA0") } },
++	{ }
++};
++
++static void i2c_hid_acpi_hp_route_irq(struct i2c_hid_acpi *ihid_acpi)
++{
++	acpi_handle handle = acpi_device_handle(ihid_acpi->adev);
++	union acpi_object args[2] = {
++		{ .integer = { .type = ACPI_TYPE_INTEGER } },
++		{ .integer = { .type = ACPI_TYPE_INTEGER, .value = 1 } },
++	};
++	struct acpi_object_list arg_list = { .count = 2, .pointer = args };
++	unsigned long long gpli;
++	acpi_status status;
++
++	if (!dmi_check_system(i2c_hid_acpi_hp_elan_irq_route))
++		return;
++	if (strcmp(acpi_device_hid(ihid_acpi->adev), "ELAN2514"))
++		return;
++	if (!acpi_has_method(NULL, "\\_SB.SGRA"))
++		return;
++	status = acpi_evaluate_integer(NULL, "\\GPLI", NULL, &gpli);
++	if (ACPI_FAILURE(status))
++		return;
++	args[0].integer.value = gpli;
++	status = acpi_evaluate_object(NULL, "\\_SB.SGRA", &arg_list, NULL);
++	acpi_handle_info(handle, "HP quirk: routed touch INT pad 0x%llx to the IO-APIC (%s)\n",
++			 gpli, acpi_format_exception(status));
++}
++
++static int i2c_hid_acpi_power_up(struct i2chid_ops *ops)
++{
++	struct i2c_hid_acpi *ihid_acpi = container_of(ops, struct i2c_hid_acpi, ops);
++
++	i2c_hid_acpi_hp_route_irq(ihid_acpi);
++	return 0;
++}
++
+ static void i2c_hid_acpi_restore_sequence(struct i2chid_ops *ops)
+ {
+ 	struct i2c_hid_acpi *ihid_acpi = container_of(ops, struct i2c_hid_acpi, ops);
+@@ -102,6 +152,7 @@
+ 		return -ENOMEM;
+ 
+ 	ihid_acpi->adev = ACPI_COMPANION(dev);
++	ihid_acpi->ops.power_up = i2c_hid_acpi_power_up;
+ 	ihid_acpi->ops.shutdown_tail = i2c_hid_acpi_shutdown_tail;
+ 	ihid_acpi->ops.restore_sequence = i2c_hid_acpi_restore_sequence;
+ 
