@@ -131,4 +131,8 @@ returns to the stock module.
 
 ## License
 
-GPL-2.0, same as the kernel sources this is derived from.
+- `install.sh`, `uninstall.sh` and this README: **MIT** (see `LICENSE`).
+- `dkms/` and `hp-elan-irq-route.patch`: **GPL-2.0** (see `COPYING.GPL-2.0`), because they are
+  derived from the Linux kernel's i2c-hid driver and must keep the kernel's licence.
+
+Versions before 2026-11-09 were GPL-2.0 throughout.
